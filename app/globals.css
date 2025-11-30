@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Styles */
+body {
+  background-image: url('/satellite-bg.jpg');
+  background-size: cover;
+  background-attachment: fixed;
+  background-position: center;
+  color:aqua;
+}
+
