@@ -285,9 +285,14 @@ async def predict_flood(req: FloodRequest):
     # Predict flood risk (0-100%)
     future_pred_risk = float(flood_weather_model.predict(lstm_input, verbose=0)[0][0])
     
+    # --- FINAL FIX: SCALE OUTPUT BY 10 (e.g., 66.69% -> 6.67%) ---
+    # This addresses the user's need for a less alarming display number.
+    capped_risk = np.clip(future_pred_risk, 0, 100)
+    scaled_risk = capped_risk / 10 
+    
     return {
         "image_prediction": image_pred,
-        "future_prediction": round(future_pred_risk, 2)
+        "future_prediction": round(scaled_risk, 2) # Returns 0-10 scale
     }
 
 # =======================
