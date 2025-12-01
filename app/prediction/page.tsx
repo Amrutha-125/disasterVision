@@ -19,23 +19,22 @@ interface LandslidePredictionResponse {
     future_prediction_binary: 0 | 1;      
 }
 
-// Flood response now returns a continuous risk percentage (0-100%)
 interface FloodPredictionResponse {
     image_prediction: 0 | 1;
     future_prediction: number; 
 }
 
-// The result structure must be updated to handle both L/S and Flood responses
 type PredictionResult = LandslidePredictionResponse | FloodPredictionResponse | null;
 
 
-// --- NEW HELPER FUNCTION FOR 3-CLASS RISK ---
+// --- HELPER FUNCTION FOR 3-CLASS RISK (Revised Thresholds) ---
 const getRiskLevel = (risk: number) => {
-    if (risk > 75) {
+    // Thresholds: HIGH (>80), MEDIUM (>60), LOW (<=60)
+    if (risk > 80) { 
         return { level: 'HIGH RISK', color: 'text-red-700' };
     }
-    if (risk > 50) {
-        return { level: 'MEDIUM RISK', color: 'text-orange-600' }; // 67.11% will be MEDIUM
+    if (risk > 60) { // 64.85% will be MEDIUM here
+        return { level: 'MEDIUM RISK', color: 'text-orange-600' }; 
     }
     return { level: 'LOW RISK', color: 'text-green-700' };
 };
@@ -108,7 +107,7 @@ export default function PredictionPage() {
 
             if (predictionType === "flood") {
                 endpoint = "/predict/flood";
-                // --- FLOOD LSTM PAYLOAD (Correctly sends weather and city) ---
+                // --- FLOOD LSTM PAYLOAD ---
                 payload = {
                     image_base64: s1Base64,
                     city: cityName,
@@ -152,7 +151,6 @@ export default function PredictionPage() {
     
     // Helper to check if the result is the new Flood Regression type
     const isFloodResult = (result: PredictionResult): result is FloodPredictionResponse => {
-        // Flood result will have a 'future_prediction' that is a number, not null.
         return !!result && !('future_prediction_probability_%' in result) && (typeof result.future_prediction === 'number');
     };
 
@@ -241,7 +239,7 @@ export default function PredictionPage() {
                                 <p className="text-lg mb-4">
                                     Image Analysis: 
                                     <span className="font-semibold ml-2">
-                                        {predictionResult.image_prediction === 1 ? 'Landslide/Flood Pixels Detected' : 'No'}
+                                        {predictionResult.image_prediction === 1 ? 'Landslide/Flood Pixels Detected' : 'Clear'}
                                     </span>
                                 </p>
                                 
@@ -263,8 +261,8 @@ export default function PredictionPage() {
                                 ) : isFloodResult(predictionResult) ? (
                                     /* --- FLOOD LSTM REGRESSION RESULT DISPLAY (CORRECTED) --- */
                                     
-                                    // Get the calculated risk level based on the new 50/75 thresholds
-                                    <p className="text-2xl font-bold">
+                                    // FIX: Replace the outer <p> with a <div> to resolve the hydration error
+                                    <div className="text-2xl font-bold">
                                         Future Flood Risk: {predictionResult.future_prediction}%
                                         
                                         {(() => {
@@ -278,7 +276,7 @@ export default function PredictionPage() {
                                                 </p>
                                             );
                                         })()}
-                                    </p>
+                                    </div>
                                 ) : (
                                     /* FALLBACK for null or incomplete data */
                                     <p className="text-lg font-bold text-gray-400">
