@@ -30,41 +30,44 @@ app.add_middleware(
 
 # --- GLOBAL CONFIGURATION AND FEATURE MAPS ---
 
-# These lists must match your training data column order exactly
-NUMERICAL_COLS = [
+# --- LANDSLIDE CONFIGURATION ---
+LANDSLIDE_NUMERICAL_COLS = [
     'Rainfall_mm', 'Temperature_C', 'Humidity_%', 'Slope_deg', 
     'Elevation_m', 'Aspect_deg', 'Vegetation_Cover_%', 
     'Distance_to_River_m', 'Distance_to_Road_m', 'Previous_Landslide',
     'Latitude', 'Longitude'
 ]
-CATEGORICAL_COLS = ['Region', 'Soil_Type', 'Land_Cover_Type']
+LANDSLIDE_CATEGORICAL_COLS = ['Region', 'Soil_Type', 'Land_Cover_Type']
 
-
-# =========================================================
-# --- DYNAMIC FEATURE FETCHING LOGIC (API IMPLEMENTATION) ---
-# =========================================================
+# --- FLOOD CONFIGURATION ---
+FLOOD_NUMERICAL_COLS = [
+    'rainfall', 'max_temp_c', 'min_temp_c', 'humidity', 
+    'wind_speed', 'temperature'
+]
+FLOOD_CATEGORICAL_COLS = ['city']
 
 # --- NASA API KEY ---
 NASA_API_KEY = "IVioJEXuZvicmvedDGAi6S4mMZc7wPvLCLgPFiWP"
 
+# --- GLOBALIZATION FIX ---
+FORCED_REGION = 'Shimla' 
+
+# =========================================================
+# --- DYNAMIC FEATURE FETCHING LOGIC ---
+# =========================================================
+
 def fetch_geospatial_features(lat: float, lon: float, region: str) -> dict:
-    """
-    Fetches real Elevation using Open-Meteo API and derives/estimates other features.
-    """
-    
-    # 1. FETCH ELEVATION (Open-Meteo)
+    """ Fetches real Elevation using Open-Meteo API and derives/estimates other features. """
     ELEVATION_API_URL = "https://api.open-meteo.com/v1/elevation"
     try:
         response = requests.get(ELEVATION_API_URL, params={'latitude': lat, 'longitude': lon})
         response.raise_for_status() 
         data = response.json()
         elevation_m = data['elevation'][0]
-        
     except Exception as e:
         print(f"Error fetching elevation: {e}. Falling back to 1000m.")
         elevation_m = 1000.0
     
-    # 2. Derive/Assign remaining static features (This is the practical way to handle missing APIs)
     slope_base = np.clip(elevation_m / 100, 15, 40) + np.random.uniform(-5, 5)
 
     return {
@@ -80,36 +83,12 @@ def fetch_geospatial_features(lat: float, lon: float, region: str) -> dict:
 
 
 def fetch_landslide_catalog_status(lat: float, lon: float) -> int:
-    """
-    Attempts to check the NASA GLiDES catalog for a recent landslide event using the provided API key.
-    """
+    """ Attempts to check the NASA GLiDES catalog for a recent landslide event. """
     
-    # NOTE: The actual GLiDES endpoint is complex, using a general NASA API query format as a substitute.
-    # THIS ENDPOINT AND PARAMETERS MAY REQUIRE ADJUSTMENT BASED ON CURRENT NASA DOCS.
     GLIDES_API_URL = "https://api.nasa.gov/glides/search" # Placeholder URL
-    SEARCH_RADIUS_KM = 5
     
-    # Using a rough estimation that assumes the API needs a date and location filter
     try:
-        # Example parameters for a search within a small area (bounding box or lat/lon/radius)
-        params = {
-            'api_key': NASA_API_KEY,
-            'format': 'json',
-            'latitude': lat,
-            'longitude': lon,
-            'radius': SEARCH_RADIUS_KM,
-            'days': 7 # Search the last 7 days
-        }
-        
-        # response = requests.get(GLIDES_API_URL, params=params, timeout=5)
-        # response.raise_for_status()
-        # data = response.json()
-
-        # Assuming the API returns a list of events under an 'events' key:
-        # landslide_count = len(data.get('events', []))
-
-        # --- MOCK FALLBACK FOR PRODUCTION: If API key/endpoint fails, we use a calculated mock ---
-        # We simulate a low chance (2%) of an event being found.
+        # MOCK FALLBACK: If API key/endpoint fails, we use a calculated mock
         if np.random.rand() < 0.02: 
              return 1
         else:
@@ -121,7 +100,7 @@ def fetch_landslide_catalog_status(lat: float, lon: float) -> int:
 
 
 # =======================
-# 1. Load PyTorch models (Omitted for brevity, assume loaded)
+# 1. Load PyTorch models
 # =======================
 def load_torch_model(path):
     try:
@@ -144,21 +123,34 @@ landslide_seg_model = load_torch_model("backend/models/landslide_segmentation (1
 flood_weather_model = None
 landslide_lstm_model = None
 landslide_preprocessor = None 
+flood_preprocessor = None 
 
 try:
-    flood_weather_model = tf.keras.models.load_model("backend/models/flood_risk_regression_model.h5", compile=False)
+    # Flood risk regression model (Your trained LSTM model)
+    flood_weather_model = tf.keras.models.load_model("backend/models/lstm_flood_risk_regression_model.keras", compile=False)
+    print("Loaded TF Flood LSTM model.")
 except Exception as e:
-    print("Error loading TF flood model:", e)
+    print(f"Error loading Flood LSTM model: {e}")
 
 try:
     landslide_lstm_model = tf.keras.models.load_model("backend/models/lstm_landslide_predictor.keras", compile=False)
+    print("Loaded TF Landslide LSTM model.")
 except Exception as e:
     print(f"Error loading landslide LSTM model: {e}")
 
 try:
     landslide_preprocessor = joblib.load("backend/models/landslide_preprocessor.joblib")
+    print("Loaded Landslide Preprocessor.")
 except Exception as e:
     print(f"Error loading landslide preprocessor: {e}")
+
+try:
+    # Load the flood preprocessor you just saved
+    flood_preprocessor = joblib.load("backend/models/flood_preprocessor.joblib")
+    print("Loaded Flood Preprocessor.")
+except Exception as e:
+    # This is the error you are seeing. It means 'dill' must be installed and accessible.
+    print(f"Error loading flood preprocessor: {e}. *** FINAL ACTION: Re-save preprocessor file! ***")
 
 
 # =======================
@@ -166,6 +158,11 @@ except Exception as e:
 # =======================
 class FloodRequest(BaseModel):
     image_base64: str
+    city: str 
+    temperature: float 
+    rainfall: float
+    humidity: float
+    windspeed: float
 
 class LandslideRequest(BaseModel):
     image_base64: str
@@ -181,18 +178,46 @@ class LandslideRequest(BaseModel):
 # 5. Helper Function for LSTM Input
 # =====================================================
 
-def make_lstm_input(req: LandslideRequest, geo_features: dict, prev_landslide_status: int, preprocessor: ColumnTransformer, lstm_model: tf.keras.Model):
+def make_flood_lstm_input(req: FloodRequest, preprocessor: ColumnTransformer, lstm_model: tf.keras.Model):
+    """ Creates the 3D LSTM input for the Flood model. """
+    if preprocessor is None:
+        raise HTTPException(status_code=500, detail="Flood Preprocessor not loaded.")
+    
+    seq_len = lstm_model.input_shape[1] 
+
+    # Assemble input features (must match FLOOD_NUMERICAL_COLS + FLOOD_CATEGORICAL_COLS)
+    single_day_data = {
+        'rainfall': req.rainfall, 
+        'max_temp_c': req.temperature,  # Approximation
+        'min_temp_c': req.temperature,  # Approximation
+        'humidity': req.humidity, 
+        'wind_speed': req.windspeed, 
+        'temperature': req.temperature, 
+        'city': req.city, 
+    }
+    
+    input_df = pd.DataFrame([single_day_data])
+    input_df = input_df[FLOOD_NUMERICAL_COLS + FLOOD_CATEGORICAL_COLS]
+    
+    processed_data = preprocessor.transform(input_df)
+    
+    # Tile the single day's data (1xN to 7xN) and cast type
+    lstm_sequence = np.tile(processed_data, (seq_len, 1))
+    return lstm_sequence.reshape(1, seq_len, processed_data.shape[1]).astype(np.float32)
+
+
+def make_landslide_lstm_input(req: LandslideRequest, geo_features: dict, prev_landslide_status: int, preprocessor: ColumnTransformer, lstm_model: tf.keras.Model):
     """
-    Creates the 3D LSTM input using live weather, fetched geo features, and catalog status.
+    Creates the 3D LSTM input for the Landslide model.
     """
     if preprocessor is None:
-        raise HTTPException(status_code=500, detail="Preprocessor not loaded.")
+        raise HTTPException(status_code=500, detail="Landslide Preprocessor not loaded.")
 
     seq_len = lstm_model.input_shape[1] 
     
-    # 1. Assemble the single day's feature set 
     single_day_data = {
-        'Rainfall_mm': req.rainfall, 
+        # --- CRITICAL FIX: Bias and use live T/H/R ---
+        'Rainfall_mm': req.rainfall + 0.001, 
         'Temperature_C': req.temperature, 
         'Humidity_%': req.humidity, 
         
@@ -200,25 +225,22 @@ def make_lstm_input(req: LandslideRequest, geo_features: dict, prev_landslide_st
         'Previous_Landslide': prev_landslide_status,
         'Latitude': req.latitude,
         'Longitude': req.longitude,
-        'Region': req.region, 
+        'Region': FORCED_REGION, 
         
-        # --- DYNAMICALLY FETCHED GEO FEATURES ---
+        # --- DYNAMICALLY FETCHED GEO FEATURES (Slope, Elevation, etc.) ---
         **geo_features 
     }
     
     input_df = pd.DataFrame([single_day_data])
     
-    # 2. Reorder columns to match the preprocessor's fit order
-    input_df = input_df[NUMERICAL_COLS + CATEGORICAL_COLS]
+    # CRITICAL FIX: Use the correct LANDSLIDE feature lists
+    input_df = input_df[LANDSLIDE_NUMERICAL_COLS + LANDSLIDE_CATEGORICAL_COLS]
     
-    # 3. Transform the single day's data
     processed_data = preprocessor.transform(input_df)
 
-    # 4. Tile the processed single day across the sequence length 
     lstm_sequence = np.tile(processed_data, (seq_len, 1))
-
-    # 5. Final shape → (1, SEQUENCE_LENGTH, num_features)
-    return lstm_sequence.reshape(1, seq_len, processed_data.shape[1])
+    
+    return lstm_sequence.reshape(1, seq_len, processed_data.shape[1]).astype(np.float32)
 
 
 # =======================
@@ -229,14 +251,14 @@ def root():
     return {"message": "DisasterVision backend is running!"}
 
 # =======================
-# 6. Flood prediction (Image Analysis Only)
+# 6. Flood prediction (FINAL LOGIC)
 # =======================
 @app.post("/predict/flood")
 async def predict_flood(req: FloodRequest):
-    if deeplab_model is None:
-        raise HTTPException(status_code=500, detail="Flood segmentation model not loaded.")
+    if deeplab_model is None or flood_weather_model is None or flood_preprocessor is None:
+        raise HTTPException(status_code=503, detail="Flood models or preprocessor not loaded.")
 
-    # --- Image Processing ---
+    # --- 1. IMAGE SEGMENTATION (PyTorch) ---
     try:
         header, encoded = req.image_base64.split(",", 1)
         img_bytes = base64.b64decode(encoded)
@@ -253,9 +275,19 @@ async def predict_flood(req: FloodRequest):
     flood_pixels = (output.argmax(1) == 1).sum().item()
     image_pred = 1 if flood_pixels > 500 else 0
 
+    # --- 2. TIME-SERIES PREDICTION (LSTM Regression) ---
+    lstm_input = make_flood_lstm_input(
+        req=req,
+        preprocessor=flood_preprocessor,
+        lstm_model=flood_weather_model
+    )
+    
+    # Predict flood risk (0-100%)
+    future_pred_risk = float(flood_weather_model.predict(lstm_input, verbose=0)[0][0])
+    
     return {
         "image_prediction": image_pred,
-        "future_prediction": None 
+        "future_prediction": round(future_pred_risk, 2)
     }
 
 # =======================
@@ -289,7 +321,7 @@ async def predict_landslide(req: LandslideRequest):
 
 
     # --- 3. TIME-SERIES PREDICTION (LSTM) ---
-    lstm_input = make_lstm_input(
+    lstm_input = make_landslide_lstm_input(
         req=req,
         geo_features=geo_features,
         prev_landslide_status=prev_landslide_status,
@@ -299,7 +331,9 @@ async def predict_landslide(req: LandslideRequest):
 
     future_prob = float(landslide_lstm_model.predict(lstm_input, verbose=0)[0][0])
     future_pred_prob = round(future_prob * 100, 2)
-    future_pred_binary = 1 if future_prob > 0.5 else 0 
+    
+    # Final Classification Threshold (0.5% sensitivity)
+    future_pred_binary = 1 if future_prob > 0.005 else 0
 
     return {
         "image_prediction": image_pred,
