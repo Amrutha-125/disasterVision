@@ -19,12 +19,26 @@ interface LandslidePredictionResponse {
     future_prediction_binary: 0 | 1;      
 }
 
+// Flood response now returns a continuous risk percentage (0-100%)
 interface FloodPredictionResponse {
     image_prediction: 0 | 1;
-    future_prediction: null; 
+    future_prediction: number; 
 }
 
+// The result structure must be updated to handle both L/S and Flood responses
 type PredictionResult = LandslidePredictionResponse | FloodPredictionResponse | null;
+
+
+// --- NEW HELPER FUNCTION FOR 3-CLASS RISK ---
+const getRiskLevel = (risk: number) => {
+    if (risk > 75) {
+        return { level: 'HIGH RISK', color: 'text-red-700' };
+    }
+    if (risk > 50) {
+        return { level: 'MEDIUM RISK', color: 'text-orange-600' }; // 67.11% will be MEDIUM
+    }
+    return { level: 'LOW RISK', color: 'text-green-700' };
+};
 
 
 export default function PredictionPage() {
@@ -63,13 +77,13 @@ export default function PredictionPage() {
                 params: { key: process.env.NEXT_PUBLIC_WEATHER_API_KEY, q: cityName },
             });
             const w = wx.current;
-            const current_weather_data: WeatherResponse = {
+            const current_weather_data: WeatherResponse = { // Local variable holds the fresh data
                 temp_c: w.temp_c,
                 humidity: w.humidity,
                 precip_mm: w.precip_mm,
                 wind_kph: w.wind_kph,
             };
-            setWeather(current_weather_data); // Update state
+            setWeather(current_weather_data); // Update state for display only
 
             // 2 — Get lat/lon
             const { data: geo } = await axios.get("https://nominatim.openstreetmap.org/search", {
@@ -94,21 +108,27 @@ export default function PredictionPage() {
 
             if (predictionType === "flood") {
                 endpoint = "/predict/flood";
+                // --- FLOOD LSTM PAYLOAD (Correctly sends weather and city) ---
                 payload = {
                     image_base64: s1Base64,
+                    city: cityName,
+                    temperature: current_weather_data.temp_c,
+                    rainfall: current_weather_data.precip_mm,
+                    humidity: current_weather_data.humidity,
+                    windspeed: current_weather_data.wind_kph,
                 };
             } else if (predictionType === "landslide") {
                 endpoint = "/predict/landslide";
                 
-                // --- FIX: Use the 'current_weather_data' variable, not the component state 'weather' ---
+                // --- LANDSLIDE LSTM PAYLOAD ---
                 payload = {
                     image_base64: s2Base64,
                     region: cityName, 
-                    temperature: current_weather_data.temp_c,
+                    temperature: current_weather_data.temp_c, 
                     humidity: current_weather_data.humidity,
                     rainfall: current_weather_data.precip_mm,
-                    latitude: lat, // Added lat/lon to payload
-                    longitude: lon, // Added lat/lon to payload
+                    latitude: lat, 
+                    longitude: lon, 
                 };
             }
 
@@ -128,6 +148,12 @@ export default function PredictionPage() {
 
     const isLandslideResult = (result: PredictionResult): result is LandslidePredictionResponse => {
         return !!result && 'future_prediction_probability_%' in result;
+    };
+    
+    // Helper to check if the result is the new Flood Regression type
+    const isFloodResult = (result: PredictionResult): result is FloodPredictionResponse => {
+        // Flood result will have a 'future_prediction' that is a number, not null.
+        return !!result && !('future_prediction_probability_%' in result) && (typeof result.future_prediction === 'number');
     };
 
 
@@ -209,22 +235,24 @@ export default function PredictionPage() {
                             <div className="md:col-span-2 bg-white text-black rounded-xl p-6 shadow-lg text-center">
                                 <h4 className="text-xl font-semibold mb-2">
                                     Prediction Result ({predictionType === "flood" ? "Flood" : "Landslide"})
+                                
                                 </h4>
 
                                 <p className="text-lg mb-4">
                                     Image Analysis: 
                                     <span className="font-semibold ml-2">
-                                        {predictionResult.image_prediction === 1 ? 'Landslide/Flood Pixels Detected' : 'Clear'}
+                                        {predictionResult.image_prediction === 1 ? 'Landslide/Flood Pixels Detected' : 'No'}
                                     </span>
                                 </p>
                                 
+                                {/* --- LANDSLIDE LSTM RESULT DISPLAY --- */}
                                 {isLandslideResult(predictionResult) ? (
                                     <>
                                         <p className="text-2xl font-bold text-amber-600">
                                             Future Landslide Risk: {predictionResult["future_prediction_probability_%"]}%
                                         </p>
                                         <p className="text-lg mt-2">
-                                            Binary Forecast: 
+                                            Forecast: 
                                             <span className={`font-extrabold ml-2 ${
                                                 predictionResult.future_prediction_binary === 1 ? 'text-red-700' : 'text-green-700'
                                             }`}>
@@ -232,9 +260,29 @@ export default function PredictionPage() {
                                             </span>
                                         </p>
                                     </>
+                                ) : isFloodResult(predictionResult) ? (
+                                    /* --- FLOOD LSTM REGRESSION RESULT DISPLAY (CORRECTED) --- */
+                                    
+                                    // Get the calculated risk level based on the new 50/75 thresholds
+                                    <p className="text-2xl font-bold">
+                                        Future Flood Risk: {predictionResult.future_prediction}%
+                                        
+                                        {(() => {
+                                            const riskData = getRiskLevel(predictionResult.future_prediction);
+                                            return (
+                                                <p className="text-lg mt-2">
+                                                    Forecast: 
+                                                    <span className={`font-extrabold ml-2 ${riskData.color}`}>
+                                                        {riskData.level}
+                                                    </span>
+                                                </p>
+                                            );
+                                        })()}
+                                    </p>
                                 ) : (
-                                    <p className="text-lg font-bold text-blue-600">
-                                        Future Risk Prediction: {predictionResult.future_prediction !== null ? `${predictionResult.future_prediction}%` : "Not Available (Image Analysis Only)"}
+                                    /* FALLBACK for null or incomplete data */
+                                    <p className="text-lg font-bold text-gray-400">
+                                        Future Risk Prediction: Not Available
                                     </p>
                                 )}
                             </div>
